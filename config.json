@@ -1,0 +1,9 @@
+{
+  "invert_controls": false,
+  "min_pct": 42.0,
+  "max_pct": 76.0,
+  "roi_width": 800,
+  "roi_height": 600,
+  "humanize": true,
+  "poll_interval_sec": 0.015
+}
