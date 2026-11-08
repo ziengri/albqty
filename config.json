@@ -2,8 +2,11 @@
   "invert_controls": false,
   "min_pct": 42.0,
   "max_pct": 76.0,
+  "humanize_ms": 20,
+  "rapid_mode": true,
+  "pulse_ms": 60,
   "roi_width": 800,
   "roi_height": 600,
-  "humanize": true,
-  "poll_interval_sec": 0.015
+  "poll_interval_sec": 0.015,
+  "catches": 0
 }

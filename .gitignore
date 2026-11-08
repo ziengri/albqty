@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*$py.class
+test_calibration.png
+live_sample.png
+debug_test_result.png

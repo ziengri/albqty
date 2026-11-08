@@ -28,15 +28,42 @@ class FastQTEBot:
         hold_pulls_left=True,   # По условию пользователя: удержание ЛКМ тянет поплавок влево
         roi_width=240,
         roi_height=40,
-        deadzone_ratio=0.15,    # Коридор нечувствительности (±15% от центра)
+        min_pct=None,           # Нижний порог от 0 до 100%
+        max_pct=None,           # Верхний порог от 0 до 100%
         target_fps=90
     ):
         self.hold_pulls_left = hold_pulls_left
         self.roi_width = roi_width
         self.roi_height = roi_height
-        self.deadzone_ratio = deadzone_ratio
         self.target_fps = target_fps
         self.poll_interval = 1.0 / target_fps
+
+        # Загрузка порогов из config.json при наличии
+        cfg_path = os.path.join(os.path.dirname(__file__), "config.json")
+        cfg = {}
+        if os.path.exists(cfg_path):
+            try:
+                import json
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+            except Exception:
+                pass
+
+        if min_pct is None:
+            min_pct = cfg.get("min_pct", 42.0)
+        if max_pct is None:
+            max_pct = cfg.get("max_pct", 76.0)
+
+        # Пороги от 0 до 100%
+        self.min_pct = max(0.0, min(100.0, float(min_pct)))
+        self.max_pct = max(0.0, min(100.0, float(max_pct)))
+
+        # Быстрое удержание и человеческий фактор
+        self.rapid_mode = cfg.get("rapid_mode", True)
+        self.pulse_ms = cfg.get("pulse_ms", 60)
+        self.humanize_ms = cfg.get("humanize_ms", 20)
+        self.last_pulse_toggle = 0.0
+        self.current_pulse_duration = self.pulse_ms / 1000.0
 
         self.user32 = ctypes.windll.user32
         self._attach_desktop()
@@ -54,11 +81,10 @@ class FastQTEBot:
             "height": self.roi_height
         }
 
-        # Dynamic center and deadzone thresholds
-        self.center_x = self.roi_width / 2.0
-        self.deadzone_px = self.roi_width * self.deadzone_ratio
-        self.left_threshold = self.center_x - self.deadzone_px
-        self.right_threshold = self.center_x + self.deadzone_px
+        # Вычисление порогов в пикселях (0 .. roi_width)
+        self.left_threshold = (self.min_pct / 100.0) * self.roi_width
+        self.right_threshold = (self.max_pct / 100.0) * self.roi_width
+        self.center_x = (self.left_threshold + self.right_threshold) / 2.0
 
         self.is_holding = False
         self.is_active = False
@@ -73,13 +99,36 @@ class FastQTEBot:
 
     def mouse_down(self):
         if not self.is_holding:
+            if self.humanize_ms > 0:
+                import random
+                time.sleep(random.uniform(self.humanize_ms * 0.4, self.humanize_ms * 1.4) / 1000.0)
             self.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
             self.is_holding = True
 
     def mouse_up(self):
         if self.is_holding:
+            if self.humanize_ms > 0:
+                import random
+                time.sleep(random.uniform(self.humanize_ms * 0.3, self.humanize_ms * 1.2) / 1000.0)
             self.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
             self.is_holding = False
+
+    def _fast_toggle(self):
+        """Быстрое переключение для удержания поплавка микро-кликами"""
+        import random
+        now = time.time()
+        if now - self.last_pulse_toggle >= self.current_pulse_duration:
+            self.last_pulse_toggle = now
+            base_s = self.pulse_ms / 1000.0
+            jitter_s = (self.humanize_ms * 0.0003) if self.humanize_ms > 0 else 0
+            self.current_pulse_duration = max(0.025, base_s + random.uniform(-jitter_s, jitter_s))
+
+            if self.is_holding:
+                self.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                self.is_holding = False
+            else:
+                self.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                self.is_holding = True
 
     def emergency_release(self):
         self.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
@@ -166,8 +215,12 @@ class FastQTEBot:
                 self.mouse_up()
                 return "DRIFT_RIGHT (UP)"
             else:
-                # Внутри мёртвой зоны (deadzone) -> СОХРАНЯЕМ ТЕКУЩЕЕ СОСТОЯНИЕ (нет дребезга!)
-                return "IN_CORRIDOR (HOLDING)" if self.is_holding else "IN_CORRIDOR (COASTING)"
+                # Внутри диапазона [left_threshold, right_threshold]
+                if self.rapid_mode:
+                    self._fast_toggle()
+                    return "RAPID_PULSE (HOLD)" if self.is_holding else "RAPID_PULSE (SLACK)"
+                else:
+                    return "IN_CORRIDOR (HOLDING)" if self.is_holding else "IN_CORRIDOR (COASTING)"
         else:
             # === Стандартная физика Albion ===
             # Зажатие ЛКМ подтягивает рыбу и тянет поплавок ВПРАВО.
@@ -181,7 +234,11 @@ class FastQTEBot:
                 self.mouse_down()
                 return "REEL_RIGHT (DOWN)"
             else:
-                return "IN_CORRIDOR (HOLDING)" if self.is_holding else "IN_CORRIDOR (COASTING)"
+                if self.rapid_mode:
+                    self._fast_toggle()
+                    return "RAPID_PULSE (HOLD)" if self.is_holding else "RAPID_PULSE (SLACK)"
+                else:
+                    return "IN_CORRIDOR (HOLDING)" if self.is_holding else "IN_CORRIDOR (COASTING)"
 
     def render_ascii_gauge(self, bobber_x):
         """Draws visual ASCII gauge in terminal."""
@@ -210,12 +267,13 @@ class FastQTEBot:
         print("=" * 65)
         print(f"Экран: {self.screen_w}x{self.screen_h}")
         print(f"Область захвата (ROI): {self.roi_width}x{self.roi_height} в ({self.roi['left']}, {self.roi['top']})")
-        print(f"Центр полосы: {self.center_x:.0f}px | Коридор удержания: {self.left_threshold:.0f}px ... {self.right_threshold:.0f}px")
+        print(f"Пороги удержания: {self.min_pct:.0f}% ... {self.max_pct:.0f}% ({self.left_threshold:.0f}px ... {self.right_threshold:.0f}px)")
         mode_str = "Зажатие ЛКМ тянет ВЛЕВО" if self.hold_pulls_left else "Стандарт Albion (Зажатие тянет ВПРАВО)"
         print(f"Режим управления: {mode_str}")
         print("-" * 65)
         print("ГОРЯЧИЕ КЛАВИШИ:")
         print("  [F5]  — Запуск / Пауза")
+        print("  [F6]  — Быстрое удержание (ВКЛ / ВЫКЛ микро-клики)")
         print("  [F7]  — Переключить направление (Зажатие влево / вправо)")
         print("  [F8]  — Авто-калибровка координат полосы")
         print("  [Esc] или [F10] — Выход")
@@ -242,6 +300,11 @@ class FastQTEBot:
                         print("\n⏸  [ПАУЗА] Бот временно приостановлен.")
                     else:
                         print("\n▶  [СТАРТ] Бот АКТИВЕН и отслеживает поплавок!")
+
+                if key_down(VK_F6):
+                    self.rapid_mode = not self.rapid_mode
+                    status = "ВКЛ (микро-клики)" if self.rapid_mode else "ВЫКЛ (обычный)"
+                    print(f"\n⚡  [БЫСТРОЕ УДЕРЖАНИЕ]: {status}")
 
                 if key_down(VK_F7):
                     self.hold_pulls_left = not self.hold_pulls_left

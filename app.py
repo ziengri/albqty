@@ -39,9 +39,11 @@ def load_config():
         "invert_controls": False,
         "min_pct": 42.0,
         "max_pct": 76.0,
+        "humanize_ms": 20,
+        "rapid_mode": True,
+        "pulse_ms": 60,
         "roi_width": 800,
         "roi_height": 600,
-        "humanize": True,
         "poll_interval_sec": 0.015,
         "catches": 0
     }
@@ -87,7 +89,9 @@ class FishingApp:
             invert_controls=self.cfg.get("invert_controls", False),
             min_pct=self.cfg.get("min_pct", 42.0),
             max_pct=self.cfg.get("max_pct", 76.0),
-            humanize=self.cfg.get("humanize", True)
+            humanize_ms=self.cfg.get("humanize_ms", 20),
+            rapid_mode=self.cfg.get("rapid_mode", True),
+            pulse_ms=self.cfg.get("pulse_ms", 60)
         )
 
         # Worker thread
@@ -249,8 +253,8 @@ class FishingApp:
         ).grid(row=0, column=0, sticky=tk.W)
         self.slider_min = tk.Scale(
             slider_frame,
-            from_=20,
-            to=60,
+            from_=0,
+            to=100,
             orient=tk.HORIZONTAL,
             bg="#21252F",
             fg="#61AFEF",
@@ -270,8 +274,8 @@ class FishingApp:
         ).grid(row=1, column=0, sticky=tk.W)
         self.slider_max = tk.Scale(
             slider_frame,
-            from_=60,
-            to=90,
+            from_=0,
+            to=100,
             orient=tk.HORIZONTAL,
             bg="#21252F",
             fg="#E06C75",
@@ -282,20 +286,68 @@ class FishingApp:
         self.slider_max.grid(row=1, column=1, sticky=tk.EW, padx=8)
         slider_frame.columnconfigure(1, weight=1)
 
-        # Humanize Jitter Checkbox
-        self.var_humanize = tk.BooleanVar(value=self.cfg.get("humanize", True))
-        chk_humanize = tk.Checkbutton(
+        # Rapid Mode (PWM / Micro-taps)
+        self.var_rapid = tk.BooleanVar(value=self.cfg.get("rapid_mode", True))
+        chk_rapid = tk.Checkbutton(
             settings_card,
-            text="Человеческий фактор (рандомизация микро-задержек для защиты от античита)",
-            variable=self.var_humanize,
+            text="⚡ Быстрое удержание (микро-клики для удержания строго в диапазоне) [F6]",
+            variable=self.var_rapid,
             command=self._on_settings_change,
-            fg="#ABB2BF",
+            font=("Segoe UI", 9, "bold"),
+            fg="#61AFEF",
             bg="#21252F",
             activebackground="#21252F",
-            activeforeground="#ABB2BF",
+            activeforeground="#61AFEF",
             selectcolor="#282C34"
         )
-        chk_humanize.pack(anchor=tk.W, pady=4)
+        chk_rapid.pack(anchor=tk.W, pady=(4, 2))
+
+        # Rapid Pulse MS & Humanize MS Sliders
+        adv_frame = tk.Frame(settings_card, bg="#21252F")
+        adv_frame.pack(fill=tk.X, pady=4)
+
+        # Pulse MS slider
+        tk.Label(
+            adv_frame,
+            text="Интервал микро-клика (мс):",
+            font=("Segoe UI", 9),
+            fg="#ABB2BF",
+            bg="#21252F"
+        ).grid(row=0, column=0, sticky=tk.W)
+        self.slider_pulse = tk.Scale(
+            adv_frame,
+            from_=30,
+            to=120,
+            orient=tk.HORIZONTAL,
+            bg="#21252F",
+            fg="#98C379",
+            highlightthickness=0,
+            command=lambda v: self._on_settings_change()
+        )
+        self.slider_pulse.set(int(self.cfg.get("pulse_ms", 60)))
+        self.slider_pulse.grid(row=0, column=1, sticky=tk.EW, padx=8)
+
+        # Humanize MS slider
+        tk.Label(
+            adv_frame,
+            text="Человеческий фактор (разброс задержки, мс):",
+            font=("Segoe UI", 9),
+            fg="#ABB2BF",
+            bg="#21252F"
+        ).grid(row=1, column=0, sticky=tk.W)
+        self.slider_humanize = tk.Scale(
+            adv_frame,
+            from_=0,
+            to=100,
+            orient=tk.HORIZONTAL,
+            bg="#21252F",
+            fg="#E5C07B",
+            highlightthickness=0,
+            command=lambda v: self._on_settings_change()
+        )
+        self.slider_humanize.set(int(self.cfg.get("humanize_ms", 20)))
+        self.slider_humanize.grid(row=1, column=1, sticky=tk.EW, padx=8)
+        adv_frame.columnconfigure(1, weight=1)
 
         # Hotkeys & Controls Panel
         btn_frame = tk.Frame(self.root, bg="#1A1C23", padx=16, pady=8)
@@ -397,11 +449,16 @@ class FishingApp:
         self.cfg["invert_controls"] = self.var_invert.get()
         self.cfg["min_pct"] = float(self.slider_min.get())
         self.cfg["max_pct"] = float(self.slider_max.get())
-        self.cfg["humanize"] = self.var_humanize.get()
+        self.cfg["rapid_mode"] = self.var_rapid.get()
+        self.cfg["pulse_ms"] = int(self.slider_pulse.get())
+        self.cfg["humanize_ms"] = int(self.slider_humanize.get())
+
         self.controller.invert_controls = self.cfg["invert_controls"]
         self.controller.min_pct = self.cfg["min_pct"]
         self.controller.max_pct = self.cfg["max_pct"]
-        self.controller.humanize = self.cfg["humanize"]
+        self.controller.rapid_mode = self.cfg["rapid_mode"]
+        self.controller.pulse_ms = self.cfg["pulse_ms"]
+        self.controller.humanize_ms = self.cfg["humanize_ms"]
         save_config(self.cfg)
 
     def toggle_running(self):
@@ -492,6 +549,11 @@ class FishingApp:
             while not self.stop_signal.is_set():
                 if is_key_just_pressed(VK_F5):
                     self.root.after(0, self.toggle_running)
+                elif is_key_just_pressed(VK_F6):
+                    # Toggle Rapid Mode
+                    new_rapid = not self.var_rapid.get()
+                    self.root.after(0, lambda: self.var_rapid.set(new_rapid))
+                    self.root.after(0, self._on_settings_change)
                 elif is_key_just_pressed(VK_F7):
                     # Toggle inverted
                     new_val = not self.var_invert.get()
@@ -525,8 +587,9 @@ class FishingApp:
 
         # Update stats
         inv_label = "Инверсия" if self.var_invert.get() else "Стандарт"
+        rapid_label = "ВКЛ" if self.var_rapid.get() else "ВЫКЛ"
         self.lbl_stats.configure(
-            text=f"Выловлено: {self.catches_count}  |  FPS: {self.current_fps:.0f}  |  Режим: {inv_label}  |  F5: Старт/Пауза  |  F7: Режим  |  F8: Тест"
+            text=f"Выловлено: {self.catches_count}  |  FPS: {self.current_fps:.0f}  |  Режим: {inv_label}  |  Быстрое удержание: {rapid_label}  |  F5: Старт  |  F6: Быстрое  |  F7: Режим"
         )
 
         self.root.after(35, self._poll_ui_telemetry)
