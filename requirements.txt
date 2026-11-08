@@ -1,0 +1,8 @@
+# Albion Online Fishing QTE Helper Dependencies
+# Установка: pip install -r requirements.txt
+
+numpy>=1.24.0          # Векторизованная математика и быстрая обработка массивов пикселей
+opencv-python>=4.8.0   # Компьютерное зрение (цветовые маски HSV/BGR, морфология, шаблоны)
+mss>=9.0.0             # Сверхбыстрый захват экрана (Windows GDI API, 100+ FPS)
+pillow>=10.0.0         # Работа с изображениями и поддержка GUI
+pyautogui>=0.9.50      # Дополнительные утилиты мыши и экрана
